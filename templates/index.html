@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crypto Price Watcher</title>
+  <link id="favicon" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%2364748b'/%3E%3C/svg%3E">
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #0b1020; color: #f8fafc; display: grid; place-items: center; padding: 24px;
+    }
+    .card {
+      width: min(720px, 100%); background: #111827; border: 1px solid #263244;
+      border-radius: 22px; padding: 28px; box-shadow: 0 24px 80px rgba(0,0,0,.35);
+    }
+    h1 { margin: 0 0 6px; font-size: clamp(26px, 4vw, 38px); }
+    .sub { color: #94a3b8; margin-bottom: 24px; }
+    .setup { display: grid; gap: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 600px) { .row { grid-template-columns: 1fr; } }
+    label { display:block; font-size: 13px; color:#94a3b8; margin-bottom:7px; }
+    input, select, button {
+      width:100%; border:1px solid #334155; background:#0f172a; color:#fff;
+      border-radius:12px; padding:12px 14px; font-size:16px;
+    }
+    button { cursor:pointer; font-weight:700; }
+    button.primary { background:#2563eb; border-color:#2563eb; }
+    button.secondary { background:#172033; }
+    .hidden { display:none !important; }
+    .dashboard { text-align:center; }
+    .status-dot { width:16px; height:16px; border-radius:999px; display:inline-block; margin-right:8px; vertical-align:-1px; background:#64748b; }
+    .status-line { font-weight:700; margin: 6px 0 22px; }
+    .price { font-size: clamp(52px, 10vw, 92px); line-height:1; font-weight:800; letter-spacing:-3px; margin:18px 0 8px; }
+    .symbol { font-size:18px; color:#94a3b8; }
+    .reference { margin:18px 0; color:#cbd5e1; }
+    .price-pair { display:flex; justify-content:center; align-items:baseline; gap:10px; margin:12px 0 2px; font-size:clamp(24px, 5vw, 38px); font-weight:800; }
+    .price-pair .slash { color:#64748b; font-weight:500; }
+    .price-pair .mine { color:#f8fafc; }
+    .price-pair .current.good { color:#22c55e; }
+    .price-pair .current.bad { color:#ef4444; }
+    .delta { font-size:22px; font-weight:750; margin-bottom:18px; }
+    .good { color:#22c55e; }
+    .bad { color:#ef4444; }
+    .muted { color:#94a3b8; }
+    .controls { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:22px; }
+    .details { margin-top:18px; font-size:13px; color:#64748b; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <section id="setup" class="setup">
+      <div>
+        <h1>Crypto Price Watcher</h1>
+        <div class="sub">Tell me your last trade. I’ll watch for the next favorable move.</div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="symbolInput">Market</label>
+          <input id="symbolInput" value="XRP/USD" placeholder="XRP/USD">
+        </div>
+        <div>
+          <label for="actionInput">Last transaction</label>
+          <select id="actionInput">
+            <option value="BUY">I last BOUGHT</option>
+            <option value="SELL">I last SOLD</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label for="referenceInput">Transaction price in USD</label>
+        <input id="referenceInput" type="number" step="any" placeholder="1.4951">
+      </div>
+      <button id="startBtn" class="primary">Start watching</button>
+    </section>
+
+    <section id="dashboard" class="dashboard hidden">
+      <h1 id="heading">Watching XRP/USD</h1>
+      <div class="status-line"><span id="dot" class="status-dot"></span><span id="statusText">Loading price…</span></div>
+      <div id="price" class="price">—</div>
+      <div id="symbol" class="symbol">XRP/USD</div>
+      <div class="price-pair"><span id="minePrice" class="mine">—</span><span class="slash">/</span><span id="currentPrice" class="current">—</span></div>
+      <div id="reference" class="reference"></div>
+      <div id="delta" class="delta muted">—</div>
+      <div class="controls">
+        <button id="muteBtn" class="secondary">🔊 Sound on</button>
+        <button id="changeBtn" class="secondary">Change trade</button>
+      </div>
+      <div id="details" class="details"></div>
+    </section>
+  </main>
+
+<script>
+const STORAGE_KEY = 'cryptoPriceWatcherConfigV1';
+const POLL_MS = 1500;
+
+let config = null;
+let muted = false;
+let wasGood = null;
+let timer = null;
+let audioCtx = null;
+let alertTimer = null;
+let lastAlertAt = 0;
+const ALERT_REPEAT_MS = 60000;
+const SIREN_DURATION_MS = 3000;
+
+const $ = id => document.getElementById(id);
+
+function favicon(color) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="28" fill="${color}"/><circle cx="32" cy="32" r="18" fill="none" stroke="white" stroke-width="5" opacity=".9"/></svg>`;
+  $('favicon').href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+
+function siren() {
+  if (muted) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    const now = audioCtx.currentTime;
+    const duration = SIREN_DURATION_MS / 1000;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = 'sawtooth';
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.14, now + 0.05);
+
+    // Alternating high/low siren sweep for about 3 seconds.
+    for (let t = 0; t < duration; t += 0.5) {
+      osc.frequency.setValueAtTime(720, now + t);
+      osc.frequency.linearRampToValueAtTime(1200, now + Math.min(t + 0.25, duration));
+      osc.frequency.linearRampToValueAtTime(720, now + Math.min(t + 0.5, duration));
+    }
+
+    gain.gain.setValueAtTime(0.14, now + Math.max(0.05, duration - 0.08));
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration);
+    lastAlertAt = Date.now();
+  } catch (e) {
+    console.warn('Audio unavailable', e);
+  }
+}
+
+function stopAlertLoop() {
+  if (alertTimer) {
+    clearInterval(alertTimer);
+    alertTimer = null;
+  }
+}
+
+function ensureAlertLoop() {
+  if (alertTimer) return;
+  alertTimer = setInterval(() => {
+    if (!muted && wasGood === true && Date.now() - lastAlertAt >= ALERT_REPEAT_MS) {
+      siren();
+    }
+  }, 1000);
+}
+
+function saveConfig(c) { localStorage.setItem(STORAGE_KEY, JSON.stringify(c)); }
+function loadConfig() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { return null; }
+}
+function clearConfig() { localStorage.removeItem(STORAGE_KEY); }
+
+function normalizeSymbol(s) {
+  s = (s || 'XRP/USD').trim().toUpperCase().replace('-', '/');
+  if (!s.includes('/')) {
+    if (s.endsWith('USD')) s = s.slice(0,-3) + '/USD';
+    else s += '/USD';
+  }
+  return s;
+}
+
+function formatPlain(n) {
+  if (!Number.isFinite(Number(n))) return '—';
+  const v = Number(n);
+  if (v >= 1000) return v.toLocaleString(undefined, {maximumFractionDigits: 2});
+  if (v >= 1) return v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6});
+  return v.toLocaleString(undefined, {minimumFractionDigits: 4, maximumFractionDigits: 8});
+}
+
+function money(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1000) return '$' + n.toLocaleString(undefined, {maximumFractionDigits: 2});
+  if (n >= 1) return '$' + n.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6});
+  return '$' + n.toLocaleString(undefined, {minimumFractionDigits: 4, maximumFractionDigits: 8});
+}
+
+function start(c) {
+  config = c;
+  wasGood = null;
+  lastAlertAt = 0;
+  stopAlertLoop();
+  $('setup').classList.add('hidden');
+  $('dashboard').classList.remove('hidden');
+  $('heading').textContent = `Watching ${c.symbol}`;
+  $('symbol').textContent = c.symbol;
+  const condition = c.action === 'BUY' ? 'above' : 'below';
+  $('reference').textContent = `Last ${c.action.toLowerCase()}: ${money(c.reference)} — waiting for price to move ${condition} this level.`;
+  $('minePrice').textContent = formatPlain(c.reference);
+  fetchPrice();
+  clearInterval(timer);
+  timer = setInterval(fetchPrice, POLL_MS);
+}
+
+async function fetchPrice() {
+  try {
+    const res = await fetch('/api/price?symbol=' + encodeURIComponent(config.symbol), {cache:'no-store'});
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Price request failed');
+
+    const p = Number(data.price);
+    const ref = Number(config.reference);
+    const good = config.action === 'BUY' ? p > ref : p < ref;
+    const diff = p - ref;
+    const pct = ref ? (diff / ref) * 100 : 0;
+
+    $('price').textContent = money(p);
+    $('minePrice').textContent = formatPlain(ref);
+    $('currentPrice').textContent = formatPlain(p);
+    $('currentPrice').className = 'current ' + (good ? 'good' : 'bad');
+    $('delta').textContent = `${diff >= 0 ? '+' : ''}${money(diff).replace('$','$')} (${pct >= 0 ? '+' : ''}${pct.toFixed(3)}%) vs. your ${config.action.toLowerCase()}`;
+    $('delta').className = 'delta ' + (good ? 'good' : 'bad');
+    $('dot').style.background = good ? '#22c55e' : '#ef4444';
+
+    if (config.action === 'BUY') {
+      $('statusText').textContent = good ? 'Above your buy price — favorable to sell' : 'Below your buy price — keep watching';
+    } else {
+      $('statusText').textContent = good ? 'Below your sell price — favorable to buy back' : 'Above your sell price — keep watching';
+    }
+
+    favicon(good ? '#22c55e' : '#ef4444');
+    document.title = `${good ? '🟢' : '🔴'} ${formatPlain(ref)} / ${formatPlain(p)}`;
+    $('details').textContent = `Revolut X ${data.price_source || 'market'} price · bid ${data.bid ?? '—'} · ask ${data.ask ?? '—'} · updated ${new Date().toLocaleTimeString()}`;
+
+    if (good) {
+      // Alert immediately when opening already-green or when crossing red -> green.
+      if (wasGood !== true) siren();
+      ensureAlertLoop();
+    } else {
+      stopAlertLoop();
+      lastAlertAt = 0;
+    }
+    wasGood = good;
+  } catch (err) {
+    $('statusText').textContent = 'Price feed unavailable — retrying';
+    $('dot').style.background = '#f59e0b';
+    $('details').textContent = err.message;
+    favicon('#f59e0b');
+    document.title = `⚠ ${config.symbol} price unavailable`;
+  }
+}
+
+$('startBtn').addEventListener('click', async () => {
+  const symbol = normalizeSymbol($('symbolInput').value);
+  const action = $('actionInput').value;
+  const reference = Number($('referenceInput').value);
+  if (!Number.isFinite(reference) || reference <= 0) {
+    alert('Enter the price of your last transaction, for example 1.4951');
+    return;
+  }
+  // A user gesture here also unlocks browser audio for later alerts.
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+  } catch {}
+  const c = {symbol, action, reference};
+  saveConfig(c);
+  start(c);
+});
+
+$('muteBtn').addEventListener('click', async () => {
+  muted = !muted;
+  $('muteBtn').textContent = muted ? '🔇 Muted' : '🔊 Sound on';
+  if (!muted && audioCtx?.state === 'suspended') { try { await audioCtx.resume(); } catch {} }
+});
+
+$('changeBtn').addEventListener('click', () => {
+  clearInterval(timer);
+  stopAlertLoop();
+  clearConfig();
+  $('dashboard').classList.add('hidden');
+  $('setup').classList.remove('hidden');
+  if (config) {
+    $('symbolInput').value = config.symbol;
+    $('actionInput').value = config.action;
+    $('referenceInput').value = config.reference;
+  }
+  config = null;
+  wasGood = null;
+  favicon('#64748b');
+  document.title = 'Crypto Price Watcher';
+});
+
+const remembered = loadConfig();
+if (remembered && remembered.symbol && remembered.action && remembered.reference) {
+  $('symbolInput').value = remembered.symbol;
+  $('actionInput').value = remembered.action;
+  $('referenceInput').value = remembered.reference;
+  start(remembered);
+}
+</script>
+</body>
+</html>
