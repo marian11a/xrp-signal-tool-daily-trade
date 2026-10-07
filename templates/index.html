@@ -73,6 +73,26 @@
         <label for="referenceInput">Transaction price in USD</label>
         <input id="referenceInput" type="number" step="any" placeholder="1.4951">
       </div>
+      <div class="row">
+        <div>
+          <label for="pollInput">Price update interval</label>
+          <select id="pollInput">
+            <option value="1500">1.5 seconds (current)</option>
+            <option value="5000">5 seconds</option>
+            <option value="10000">10 seconds</option>
+            <option value="30000">30 seconds</option>
+            <option value="60000" selected>1 minute</option>
+            <option value="120000">2 minutes</option>
+            <option value="300000">5 minutes</option>
+            <option value="600000">10 minutes</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div id="customPollWrap" class="hidden">
+          <label for="customPollInput">Custom interval (seconds)</label>
+          <input id="customPollInput" type="number" min="0.1" step="0.1" value="60" placeholder="60">
+        </div>
+      </div>
       <button id="startBtn" class="primary">Start watching</button>
     </section>
 
@@ -94,7 +114,8 @@
 
 <script>
 const STORAGE_KEY = 'cryptoPriceWatcherConfigV1';
-const POLL_MS = 1500;
+const DEFAULT_POLL_MS = 60000;
+const MIN_POLL_MS = 1000;
 
 let config = null;
 let muted = false;
@@ -196,6 +217,7 @@ function money(n) {
 
 function start(c) {
   config = c;
+  config.pollMs = Number(config.pollMs) >= MIN_POLL_MS ? Number(config.pollMs) : DEFAULT_POLL_MS;
   wasGood = null;
   lastAlertAt = 0;
   stopAlertLoop();
@@ -208,7 +230,7 @@ function start(c) {
   $('minePrice').textContent = formatPlain(c.reference);
   fetchPrice();
   clearInterval(timer);
-  timer = setInterval(fetchPrice, POLL_MS);
+  timer = setInterval(fetchPrice, config.pollMs);
 }
 
 async function fetchPrice() {
@@ -259,10 +281,41 @@ async function fetchPrice() {
   }
 }
 
+$('pollInput').addEventListener('change', () => {
+  const custom = $('pollInput').value === 'custom';
+  $('customPollWrap').classList.toggle('hidden', !custom);
+});
+
+function setPollControls(pollMs) {
+  const ms = Number(pollMs) || DEFAULT_POLL_MS;
+  const presetValues = ['1500', '5000', '10000', '30000', '60000', '120000', '300000', '600000'];
+  if (presetValues.includes(String(ms))) {
+    $('pollInput').value = String(ms);
+    $('customPollWrap').classList.add('hidden');
+  } else {
+    $('pollInput').value = 'custom';
+    $('customPollWrap').classList.remove('hidden');
+    $('customPollInput').value = (ms / 1000).toString();
+  }
+}
+
 $('startBtn').addEventListener('click', async () => {
   const symbol = normalizeSymbol($('symbolInput').value);
   const action = $('actionInput').value;
   const reference = Number($('referenceInput').value);
+  let pollMs;
+
+  if ($('pollInput').value === 'custom') {
+    const seconds = Number($('customPollInput').value);
+    if (!Number.isFinite(seconds) || seconds < 1) {
+      alert('Enter a custom interval of at least 1 second.');
+      return;
+    }
+    pollMs = Math.round(seconds * 1000);
+  } else {
+    pollMs = Number($('pollInput').value);
+  }
+
   if (!Number.isFinite(reference) || reference <= 0) {
     alert('Enter the price of your last transaction, for example 1.4951');
     return;
@@ -272,7 +325,7 @@ $('startBtn').addEventListener('click', async () => {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') await audioCtx.resume();
   } catch {}
-  const c = {symbol, action, reference};
+  const c = {symbol, action, reference, pollMs};
   saveConfig(c);
   start(c);
 });
@@ -305,6 +358,7 @@ if (remembered && remembered.symbol && remembered.action && remembered.reference
   $('symbolInput').value = remembered.symbol;
   $('actionInput').value = remembered.action;
   $('referenceInput').value = remembered.reference;
+  setPollControls(remembered.pollMs ?? DEFAULT_POLL_MS);
   start(remembered);
 }
 </script>
